@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+chromadb
+langchain
+langchain-community
+langgraph
+ollama
+pypdf
+networkx
+sentence-transformers
+sqlalchemy
+google-generativeai
+python-dotenv
