@@ -457,6 +457,12 @@ def generate_narrative(player_action: str, game_events: List[Dict],
         if game_state.pet:
             pet_info = f"\n- Companion: {game_state.pet.name} the {game_state.pet.type} (HP: {game_state.pet.current_hp}/{game_state.pet.max_hp}, Bond: {game_state.pet.bond}%, Abilities: {', '.join(game_state.pet.abilities)})"
         
+        # Check if player is going to safe location
+        is_safe_journey = any(word in player_action.lower() for word in ["home", "hometown", "town", "village", "return", "back"])
+        safe_context = ""
+        if is_safe_journey:
+            safe_context = "\n\n⚠️ IMPORTANT: The player is traveling to a SAFE location (home/town/village). Do NOT generate hostile encounters, dangerous situations, or monsters. Describe a peaceful journey or safe arrival. This is a safe trip, not an adventure."
+        
         context = f"""PLAYER ACTION: {player_action}
 
 GAME EVENTS (incorporate these creatively into your response):
@@ -466,21 +472,30 @@ CURRENT SITUATION:
 - Location: {game_state.location}
 - HP: {game_state.character.current_hp}/{game_state.character.max_hp}
 - Level: {game_state.character.level}
-- Inventory: {', '.join(game_state.inventory) if game_state.inventory else 'Empty'}{pet_info}{monsters_info}{npc_context}{conversation_context}
+- Inventory: {', '.join(game_state.inventory) if game_state.inventory else 'Empty'}{pet_info}{monsters_info}{npc_context}{conversation_context}{safe_context}
 
 CRITICAL: You MUST maintain continuity with the conversation history above. If the player is thanking or talking to an NPC/creature that was mentioned in recent context, respond as if that conversation is ongoing. Do NOT reset to the beginning or treat it as a new encounter.
+
+CRITICAL CONTEXT RULES:
+- If the player is going HOME, TOWN, or VILLAGE, they are traveling to a SAFE location. Do NOT generate hostile encounters or dangerous situations. Describe a peaceful journey or arrival at a safe place.
+- If the player is in a DANGEROUS area (dungeon, cave, forest, etc.), encounters are appropriate.
+- If the player is going to a SAFE location (home, town, village), describe the journey as safe and peaceful, or arriving at the destination.
+- MATCH THE SETTING: If the player is on a mountain, encounters should be mountain-appropriate. If in a graveyard, encounters should be undead-themed. If going home, it should be peaceful.
+- DICE ROLLS: If there are dice roll events in GAME EVENTS, WAIT for the dice result before describing the outcome. Reference the dice roll result in your narrative. For example: "You roll the dice... [wait for result]... With a roll of [X], you [succeed/fail]..." The dice roll determines what happens, so describe the outcome based on the roll result.
 
 INSTRUCTIONS:
 1. Be CREATIVE and VIVID - Use rich descriptions, sensory details, and atmospheric storytelling
 2. MAINTAIN CONTINUITY - Reference recent events and conversations. If the player is continuing a conversation, respond appropriately.
-3. Describe the IMMEDIATE RESULT of the player's action with engaging detail
-4. If the player has a pet/companion, mention them naturally - they can help, react, or provide commentary
-5. Include any discoveries, obstacles, NPC reactions, or environmental changes
-6. End with 2-3 specific, interesting actionable options for what the player can do next
-7. Integrate the game events (dice rolls, combat) creatively into your narrative
-8. Keep it engaging (3-5 sentences + options) with vivid imagery and personality
+3. RESPECT CONTEXT - If player is going to a safe location (home/town), describe a peaceful journey or safe arrival. Do NOT add hostile encounters.
+4. MATCH THE SETTING - Encounters and events must be appropriate for the current location and context.
+5. Describe the IMMEDIATE RESULT of the player's action with engaging detail
+6. If the player has a pet/companion, mention them naturally - they can help, react, or provide commentary
+7. Include any discoveries, obstacles, NPC reactions, or environmental changes (but only if contextually appropriate)
+8. End with 2-3 specific, interesting actionable options for what the player can do next
+9. Integrate the game events (dice rolls, combat) creatively into your narrative
+10. Keep it engaging (3-5 sentences + options) with vivid imagery and personality
 
-Remember: Be CREATIVE, make the world feel ALIVE, MAINTAIN CONTINUITY with previous interactions, and always provide CONSEQUENCES and next steps."""
+Remember: Be CREATIVE, make the world feel ALIVE, MAINTAIN CONTINUITY, RESPECT CONTEXT (safe places = safe journeys), and always provide CONSEQUENCES and next steps."""
         
         provider = AI_PROVIDER
         
@@ -643,6 +658,17 @@ def process_action(action: str, game_state: GameState) -> Dict[str, Any]:
                 monster.get("ac", 12)
             )
             
+            # Add attack roll event (will show dice animation)
+            events.append({
+                "type": "combat",
+                "description": f"Attack roll: {attack_result['roll']} + {attack_result['modifier']} = {attack_result['total']} {'(CRITICAL!)' if attack_result['critical'] else ''}",
+                "roll": attack_result['roll'],
+                "modifier": attack_result['modifier'],
+                "total": attack_result['total'],
+                "hit": attack_result["hit"],
+                "critical": attack_result.get("critical", False)
+            })
+            
             if attack_result["hit"]:
                 damage_result = RuleEngine.damage_roll(
                     1, 6, game_state.character.get_modifier("strength"),
@@ -655,8 +681,8 @@ def process_action(action: str, game_state: GameState) -> Dict[str, Any]:
                 )
                 
                 events.append({
-                    "type": "combat",
-                    "description": f"Attack roll: {attack_result['roll']} + {attack_result['modifier']} = {attack_result['total']} {'(CRITICAL!)' if attack_result['critical'] else ''}",
+                    "type": "damage",
+                    "description": f"Damage roll: {damage_result['rolls']} + {damage_result['modifier']} = {damage_result['total']} damage",
                     "damage": damage_result["total"],
                     "monster_hp": monster["hp"]
                 })
@@ -674,8 +700,8 @@ def process_action(action: str, game_state: GameState) -> Dict[str, Any]:
                     })
             else:
                 events.append({
-                    "type": "combat",
-                    "description": f"Attack missed! Roll: {attack_result['roll']} + {attack_result['modifier']} = {attack_result['total']} (needed {monster.get('ac', 12)})"
+                    "type": "miss",
+                    "description": f"Attack missed! Needed {monster.get('ac', 12)} to hit"
                 })
         else:
             events.append({
@@ -683,49 +709,144 @@ def process_action(action: str, game_state: GameState) -> Dict[str, Any]:
                 "description": "No enemies to attack"
             })
     
-    # Skill checks
-    elif any(word in action_lower for word in ["climb", "jump", "acrobatics"]):
-        check = RuleEngine.skill_check(
-            game_state.character.get_modifier("dexterity"),
-            game_state.character.level // 4,
-            12
-        )
+    # Skill checks - require manual dice roll
+    elif any(word in action_lower for word in ["climb", "jump", "acrobatics", "lockpick", "pick lock"]):
         events.append({
-            "type": "skill_check",
-            "description": f"Dexterity check: {check['roll']} + {check['modifier']} = {check['total']} {'(Success!)' if check['success'] else '(Failed)'}",
-            "success": check["success"]
+            "type": "skill_check_pending",
+            "description": "Dexterity check required. Click 'Roll Dice' to attempt!",
+            "ability": "dexterity",
+            "dc": 12,
+            "requires_dice": True
         })
     
-    elif any(word in action_lower for word in ["search", "investigate", "perception"]):
-        check = RuleEngine.skill_check(
-            game_state.character.get_modifier("wisdom"),
-            game_state.character.level // 4,
-            10
-        )
+    elif any(word in action_lower for word in ["search", "investigate", "perception", "detect", "spot"]):
         events.append({
-            "type": "skill_check",
-            "description": f"Wisdom check: {check['roll']} + {check['modifier']} = {check['total']} {'(Success!)' if check['success'] else '(Failed)'}",
-            "success": check["success"]
+            "type": "skill_check_pending",
+            "description": "Wisdom/Perception check required. Click 'Roll Dice' to attempt!",
+            "ability": "wisdom",
+            "dc": 10,
+            "requires_dice": True
         })
     
-    # Movement
-    elif any(word in action_lower for word in ["move", "go", "walk", "run", "north", "south", "east", "west"]):
-        events.append({
-            "type": "movement",
-            "description": "You move through the dungeon"
-        })
-        # Random chance of encountering monster
-        if random.random() < 0.3 and not game_state.monsters:
-            game_state.monsters.append({
-                "name": "Goblin",
-                "hp": 15,
-                "max_hp": 15,
-                "ac": 12,
-                "cr": 1
-            })
+    # Movement and location changes
+    elif any(word in action_lower for word in ["move", "go", "walk", "run", "travel", "head", "proceed", "north", "south", "east", "west", "home", "hometown", "town", "village", "return", "back"]):
+        # Update location based on action
+        if any(word in action_lower for word in ["home", "hometown", "town", "village", "return", "back"]):
+            # Going to a safe location - no random encounters
+            game_state.location = "Your hometown"
             events.append({
-                "type": "encounter",
-                "description": "A goblin appears!"
+                "type": "movement",
+                "description": "You travel back to your hometown"
+            })
+            # Clear monsters when reaching safe location
+            if game_state.monsters:
+                game_state.monsters = []
+        elif any(word in action_lower for word in ["north", "south", "east", "west"]):
+            # Directional movement
+            direction = next((word for word in ["north", "south", "east", "west"] if word in action_lower), "forward")
+            game_state.location = f"Moving {direction} from {game_state.location}"
+            events.append({
+                "type": "movement",
+                "description": f"You move {direction}"
+            })
+            # Only random encounters in dangerous areas, not when going home
+            if "home" not in action_lower and "town" not in action_lower and "village" not in action_lower:
+                if random.random() < 0.2 and not game_state.monsters:
+                    # Roll dice to determine encounter outcome
+                    encounter_check = RuleEngine.skill_check(
+                        game_state.character.get_modifier("wisdom"),
+                        game_state.character.level // 4,
+                        12  # DC 12 to avoid or detect encounter
+                    )
+                    events.append({
+                        "type": "skill_check",
+                        "description": f"Perception check: {encounter_check['roll']} + {encounter_check['modifier']} = {encounter_check['total']} {'(Success - you avoid the encounter!)' if encounter_check['success'] else '(Failed - encounter occurs!)'}",
+                        "success": encounter_check["success"],
+                        "roll": encounter_check['roll'],
+                        "modifier": encounter_check['modifier'],
+                        "total": encounter_check['total']
+                    })
+                    
+                    # Only spawn monster if perception check failed
+                    if not encounter_check["success"]:
+                        monster_types = [
+                            {"name": "Goblin", "hp": 10, "max_hp": 10, "ac": 12, "cr": 0},
+                            {"name": "Orc", "hp": 15, "max_hp": 15, "ac": 13, "cr": 1},
+                            {"name": "Skeleton", "hp": 13, "max_hp": 13, "ac": 13, "cr": 0.25},
+                            {"name": "Wolf", "hp": 11, "max_hp": 11, "ac": 13, "cr": 0.25}
+                        ]
+                        monster = random.choice(monster_types)
+                        game_state.monsters.append(monster)
+                        game_state.add_note("Encounter", f"Met a {monster['name']} while traveling", "Combat")
+                        events.append({
+                            "type": "encounter",
+                            "description": f"Encountered: {monster['name']}",
+                            "monster": monster
+                        })
+        else:
+            # General movement
+            events.append({
+                "type": "movement",
+                "description": "You move forward"
+            })
+            # Only random encounters if not going to safe places
+            if "home" not in action_lower and "town" not in action_lower and "village" not in action_lower:
+                if random.random() < 0.2 and not game_state.monsters:
+                    # Encounter occurs - player needs to roll dice
+                    monster_types = [
+                        {"name": "Goblin", "hp": 10, "max_hp": 10, "ac": 12, "cr": 0},
+                        {"name": "Orc", "hp": 15, "max_hp": 15, "ac": 13, "cr": 1},
+                        {"name": "Skeleton", "hp": 13, "max_hp": 13, "ac": 13, "cr": 0.25}
+                    ]
+                    monster = random.choice(monster_types)
+                    game_state.monsters.append(monster)
+                    game_state.add_note("Encounter", f"Met a {monster['name']} while traveling", "Combat")
+                    events.append({
+                        "type": "encounter",
+                        "description": f"Encountered: {monster['name']}! Click 'Roll Dice' to attempt to detect or avoid!",
+                        "monster": monster,
+                        "requires_dice": True
+                    })
+    
+    # Training/Practice - improves ability scores (no dice roll, just improves)
+    elif any(word in action_lower for word in ["train", "practice", "exercise", "workout", "drill"]):
+        # Determine which ability to improve based on training focus
+        improved_ability = None
+        
+        if any(word in action_lower for word in ["strength", "strength", "lift", "punch", "strike"]):
+            improved_ability = "strength"
+        elif any(word in action_lower for word in ["dexterity", "agility", "speed", "dodge", "acrobatics"]):
+            improved_ability = "dexterity"
+        elif any(word in action_lower for word in ["constitution", "endurance", "stamina", "health"]):
+            improved_ability = "constitution"
+        elif any(word in action_lower for word in ["intelligence", "study", "learn", "read", "knowledge"]):
+            improved_ability = "intelligence"
+        elif any(word in action_lower for word in ["wisdom", "perception", "awareness", "insight"]):
+            improved_ability = "wisdom"
+        elif any(word in action_lower for word in ["charisma", "social", "persuade", "charm"]):
+            improved_ability = "charisma"
+        else:
+            # Default: improve physical abilities
+            abilities = ["strength", "dexterity", "constitution"]
+            improved_ability = random.choice(abilities)
+        
+        # Apply improvement (always succeeds with training)
+        current_score = getattr(game_state.character, improved_ability)
+        if current_score < 20:  # Cap at 20
+            setattr(game_state.character, improved_ability, current_score + 1)
+            game_state.add_note("Training", f"Improved {improved_ability.capitalize()} through training! ({current_score} → {current_score + 1})", "Event")
+            events.append({
+                "type": "training",
+                "description": f"Training successful! {improved_ability.capitalize()} increased by 1 ({current_score} → {current_score + 1})",
+                "ability": improved_ability,
+                "old_value": current_score,
+                "new_value": current_score + 1
+            })
+        else:
+            events.append({
+                "type": "training",
+                "description": f"Training complete, but {improved_ability.capitalize()} is already at maximum (20)",
+                "ability": improved_ability
             })
     
     # Rest/heal
@@ -880,6 +1001,148 @@ async def process_player_action(request: ActionRequest):
     try:
         result = process_action(request.action, game_state)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DiceRollRequest(BaseModel):
+    session_id: str = "default"
+    roll_type: str  # "attack", "skill_check", "encounter", "damage"
+    context: Optional[Dict] = None  # Additional context (monster, ability, DC, etc.)
+
+
+@app.post("/api/roll-dice", response_model=Dict[str, Any])
+async def roll_dice(request: DiceRollRequest):
+    """Handle manual dice rolls"""
+    session_id = request.session_id
+    
+    if session_id not in game_states:
+        raise HTTPException(status_code=404, detail="Game session not found")
+    
+    game_state = game_states[session_id]
+    events = []
+    
+    try:
+        if request.roll_type == "attack":
+            # Attack roll
+            if not game_state.monsters:
+                raise HTTPException(status_code=400, detail="No monsters to attack")
+            
+            monster = game_state.monsters[0]
+            attack_result = RuleEngine.attack_roll(
+                game_state.character.level,
+                game_state.character.get_modifier("strength"),
+                monster.get("ac", 12)
+            )
+            
+            events.append({
+                "type": "combat",
+                "description": f"Attack roll: {attack_result['roll']} + {attack_result['modifier']} = {attack_result['total']} {'(CRITICAL!)' if attack_result['critical'] else ''}",
+                "roll": attack_result['roll'],
+                "modifier": attack_result['modifier'],
+                "total": attack_result['total'],
+                "hit": attack_result["hit"],
+                "critical": attack_result.get("critical", False)
+            })
+            
+            if attack_result["hit"]:
+                # Auto-roll damage
+                damage_result = RuleEngine.damage_roll(
+                    1, 6, game_state.character.get_modifier("strength"),
+                    attack_result["critical"]
+                )
+                monster["hp"] = RuleEngine.calculate_hp(
+                    monster.get("max_hp", 20),
+                    monster["hp"],
+                    damage_result["total"]
+                )
+                
+                events.append({
+                    "type": "damage",
+                    "description": f"Damage roll: {damage_result['rolls']} + {damage_result['modifier']} = {damage_result['total']} damage",
+                    "damage": damage_result["total"],
+                    "monster_hp": monster["hp"]
+                })
+                
+                if monster["hp"] <= 0:
+                    xp_gain = RuleEngine.calculate_xp(monster.get("cr", 1))
+                    game_state.character.add_xp(xp_gain)
+                    monster_name = monster.get("name", "Monster")
+                    game_state.add_note("Victory", f"Defeated {monster_name} and gained {xp_gain} XP", "Combat")
+                    game_state.monsters.remove(monster)
+                    events.append({
+                        "type": "victory",
+                        "description": f"Monster defeated! Gained {xp_gain} XP",
+                        "xp": xp_gain
+                    })
+            else:
+                events.append({
+                    "type": "miss",
+                    "description": f"Attack missed! Needed {monster.get('ac', 12)} to hit"
+                })
+        
+        elif request.roll_type == "skill_check":
+            # Skill check
+            context = request.context or {}
+            ability = context.get("ability", "dexterity")
+            dc = context.get("dc", 10)
+            
+            check = RuleEngine.skill_check(
+                game_state.character.get_modifier(ability),
+                game_state.character.level // 4,
+                dc
+            )
+            
+            events.append({
+                "type": "skill_check",
+                "description": f"{ability.capitalize()} check: {check['roll']} + {check['modifier']} = {check['total']} {'(Success!)' if check['success'] else '(Failed)'}",
+                "success": check["success"],
+                "roll": check['roll'],
+                "modifier": check['modifier'],
+                "total": check['total']
+            })
+        
+        elif request.roll_type == "encounter":
+            # Encounter detection/avoidance
+            if game_state.monsters:
+                encounter_check = RuleEngine.skill_check(
+                    game_state.character.get_modifier("wisdom"),
+                    game_state.character.level // 4,
+                    12  # DC 12 to avoid or detect encounter
+                )
+                
+                events.append({
+                    "type": "skill_check",
+                    "description": f"Perception check: {encounter_check['roll']} + {encounter_check['modifier']} = {encounter_check['total']} {'(Success - you avoid the encounter!)' if encounter_check['success'] else '(Failed - encounter occurs!)'}",
+                    "success": encounter_check["success"],
+                    "roll": encounter_check['roll'],
+                    "modifier": encounter_check['modifier'],
+                    "total": encounter_check['total']
+                })
+                
+                # If successful, remove the monster
+                if encounter_check["success"] and game_state.monsters:
+                    game_state.monsters = []
+        
+        # Generate narrative from AI
+        narrative = generate_narrative("Dice roll result", events, game_state)
+        
+        # Update game state
+        game_state.turn_count += 1
+        game_state.game_history.append({
+            "turn": game_state.turn_count,
+            "action": f"Dice roll: {request.roll_type}",
+            "events": events,
+            "narrative": narrative,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        return {
+            "narrative": narrative,
+            "events": events,
+            "game_state": game_state.to_dict()
+        }
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

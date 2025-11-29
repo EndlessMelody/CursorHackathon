@@ -10,9 +10,19 @@ function DiceRollAnimation({ event }) {
   const rollIntervalRef = useRef(null)
 
   useEffect(() => {
-    // Extract roll value from event description
-    const rollMatch = event.description.match(/(\d+)\s*\+/);
-    const roll = rollMatch ? parseInt(rollMatch[1]) : null;
+    // Extract roll value from event - check multiple sources
+    let roll = null;
+    
+    // Check if event has roll property directly
+    if (event.roll !== undefined) {
+      roll = event.roll;
+    } else if (event.total !== undefined) {
+      roll = event.total;
+    } else {
+      // Try to extract from description
+      const rollMatch = event.description.match(/(\d+)\s*\+/);
+      roll = rollMatch ? parseInt(rollMatch[1]) : null;
+    }
     
     if (roll) {
       setFinalRoll(roll);
@@ -80,6 +90,7 @@ function App() {
   const [narrative, setNarrative] = useState('')
   const [events, setEvents] = useState([])
   const [sessionId] = useState(() => `session_${Date.now()}`)
+  const [pendingDiceRoll, setPendingDiceRoll] = useState(null)  // Track pending dice roll
   const narrativeEndRef = useRef(null)
   const actionInputRef = useRef(null)
 
@@ -133,12 +144,64 @@ function App() {
       setNarrative(response.data.narrative)
       setEvents(response.data.events || [])
       setGameState(response.data.game_state)
+      
+      // Check if there's a pending dice roll
+      const diceEvent = response.data.events?.find(e => e.requires_dice)
+      if (diceEvent) {
+        setPendingDiceRoll({
+          type: diceEvent.type,
+          context: diceEvent
+        })
+      } else {
+        setPendingDiceRoll(null)
+      }
     } catch (error) {
       console.error('Action failed:', error)
       setNarrative('Something went wrong. Please try again.')
     } finally {
       setLoading(false)
       actionInputRef.current?.focus()
+    }
+  }
+
+  const handleDiceRoll = async () => {
+    if (!pendingDiceRoll || loading) return
+    
+    setLoading(true)
+    
+    try {
+      // Determine roll type from pending event
+      let rollType = "skill_check"
+      let context = {}
+      
+      if (pendingDiceRoll.type === "combat_pending") {
+        rollType = "attack"
+        context = { monster: pendingDiceRoll.context.monster }
+      } else if (pendingDiceRoll.type === "encounter") {
+        rollType = "encounter"
+      } else if (pendingDiceRoll.type === "skill_check_pending") {
+        rollType = "skill_check"
+        context = {
+          ability: pendingDiceRoll.context.ability,
+          dc: pendingDiceRoll.context.dc
+        }
+      }
+      
+      const response = await axios.post(`${API_BASE}/api/roll-dice`, {
+        session_id: sessionId,
+        roll_type: rollType,
+        context: context
+      })
+      
+      setNarrative(response.data.narrative)
+      setEvents(response.data.events || [])
+      setGameState(response.data.game_state)
+      setPendingDiceRoll(null)
+    } catch (error) {
+      console.error('Dice roll failed:', error)
+      setNarrative('Dice roll failed. Please try again.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -156,7 +219,8 @@ function App() {
       pet_interaction: '🐕',
       pet_ability: '🌟',
       dice_roll: '🎲',
-      item_used: '📦'
+      item_used: '📦',
+      training: '💪'
     }
     return icons[type] || '✨'
   }
@@ -170,7 +234,8 @@ function App() {
       encounter: '#ff8787',
       victory: '#ffd43b',
       action: '#74c0fc',
-      info: '#adb5bd'
+      info: '#adb5bd',
+      training: '#ff9800'
     }
     return colors[type] || '#adb5bd'
   }
@@ -215,6 +280,18 @@ function App() {
             <span className="stat-label">AC</span>
             <span className="stat-value">{gameState.character.ac}</span>
           </div>
+          <div className="stat">
+            <span className="stat-label">STR</span>
+            <span className="stat-value">{gameState.character.strength}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">DEX</span>
+            <span className="stat-value">{gameState.character.dexterity}</span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">CON</span>
+            <span className="stat-value">{gameState.character.constitution}</span>
+          </div>
         </div>
       </header>
 
@@ -227,9 +304,22 @@ function App() {
             {events.length > 0 && (
               <div className="events-list">
                 {events.map((event, idx) => {
-                  // Show dice animation for combat and skill checks
-                  if (event.type === 'skill_check' || event.type === 'combat') {
+                  // Show dice animation only for actual dice rolls (not pending ones)
+                  if ((event.type === 'skill_check' || event.type === 'combat' || event.type === 'damage') && event.roll !== undefined) {
                     return <DiceRollAnimation key={idx} event={event} />
+                  }
+                  // Show pending dice prompts differently
+                  if (event.requires_dice) {
+                    return (
+                      <div 
+                        key={idx} 
+                        className="event-item pending-dice"
+                        style={{ borderLeftColor: '#ffd43b' }}
+                      >
+                        <span className="event-icon">🎲</span>
+                        <span className="event-description">{event.description}</span>
+                      </div>
+                    )
                   }
                   return (
                     <div 
@@ -395,6 +485,21 @@ function App() {
       </div>
 
       <div className="action-bar">
+        {pendingDiceRoll && (
+          <div className="dice-prompt">
+            <div className="dice-prompt-content">
+              <span className="dice-prompt-text">🎲 Dice roll required!</span>
+              <button 
+                onClick={handleDiceRoll} 
+                disabled={loading}
+                className="dice-roll-button"
+              >
+                {loading ? 'Rolling...' : 'Roll Dice'}
+              </button>
+            </div>
+          </div>
+        )}
+        
         <form onSubmit={handleAction} className="action-form">
           <input
             ref={actionInputRef}
@@ -402,13 +507,13 @@ function App() {
             value={action}
             onChange={(e) => setAction(e.target.value)}
             placeholder="What do you do? (e.g., 'attack the goblin', 'search the room', 'move north')"
-            disabled={loading}
+            disabled={loading || pendingDiceRoll}
             className="action-input"
             autoFocus
           />
           <button 
             type="submit" 
-            disabled={loading || !action.trim()}
+            disabled={loading || !action.trim() || pendingDiceRoll}
             className="action-button"
           >
             {loading ? '...' : 'Act'}

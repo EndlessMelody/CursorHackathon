@@ -501,6 +501,59 @@
   border-left: 2px solid #33cf66;
 }
 
+/* Dice Roll Button Prompt */
+.dice-prompt {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  border: 2px solid #ffd43b;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+  50% { box-shadow: 0 4px 20px rgba(102, 126, 234, 0.8); }
+}
+
+.dice-prompt-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dice-prompt-text {
+  color: #fff;
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
+.dice-roll-button {
+  background: #ffd43b;
+  color: #1a202c;
+  border: none;
+  padding: 0.75rem 1.5rem;
+  border-radius: 6px;
+  font-weight: bold;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.dice-roll-button:hover:not(:disabled) {
+  background: #ffed4e;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.dice-roll-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Responsive */
 @media (max-width: 968px) {
   .game-container {
